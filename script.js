@@ -1,319 +1,226 @@
-var video = document.getElementById('video');
-var startButton = document.getElementById('start');
-var stopButton = document.getElementById('stop');
-var resetButton = document.getElementById('reset');
-var resultWrap = document.getElementById('result');
-var hasCaught = false;
-var player;
-var playerStartTime = 50;
-//canvas to save picture to
-var picture = document.getElementById("picture");
-var ctx = picture.getContext("2d");
-picture.width = 640;
-picture.height = 480;
-//Youtube video stuff
-var tag = document.createElement('script');
-tag.src = "https://www.youtube.com/iframe_api";
-var firstScriptTag = document.getElementsByTagName('script')[0];
-firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
-function initSuccess() {
-  DiffCamEngine.start();
-}
-function capture(payload) {
-  if (payload.hasMotion && !hasCaught) {
-    initOnMovement(payload.imageData);
-    hasCaught = true;
-  }
-}
-function initOnMovement(imageData) {
-  player.seekTo(140, true);
-  player.playVideo();
-  setTimeout(function() {
-    ctx.drawImage(video, 0, 0, 640, 480);
-    resultWrap.innerHTML = "<h1>Smile!</h1>";
-    DiffCamEngine.stop();
-  }, 3000);
-}
-function onYouTubeIframeAPIReady() {
-  player = new YT.Player('player', {
-    height: '640',
-    width: '480',
-    videoId: 'WQvM4EM0lO8',
-    events: {
-      'onReady': onPlayerReady
-    }
-  });
-}
-function onPlayerReady(event) {
-  startButton.classList.remove("hide");
-  stopButton.classList.remove("hide");
-  resetButton.classList.remove("hide");
-}
-function resetApp() {
-  hasCaught = false;
-  player.pauseVideo();
-  ctx.clearRect(0, 0, picture.width, picture.height);
-  resultWrap.innerHTML = "";
-  DiffCamEngine.start();
-}
-function stopApp() {
-  player.pauseVideo();
-  DiffCamEngine.stop();
-}
-function startApp() {
-  DiffCamEngine.init({
-    video: video,
-    initSuccessCallback: initSuccess,
-    captureCallback: capture
-  });
-}
-function init() {
-  startButton.classList.add("hide");
-  startButton.addEventListener("click", function() {
-    startApp();
-    this.parentElement.removeChild(this);
-  });
-  stopButton.classList.add("hide");
-  stopButton.addEventListener("click", function() {
-    stopApp();
-  });
-  resetButton.classList.add("hide");
-  resetButton.addEventListener("click", function() {
-    resetApp();
-  });
-}
-init();
-var DiffCamEngine = (function() {
-  var stream; // stream obtained from webcam
-  var video; // shows stream
-  var captureCanvas; // internal canvas for capturing full images from video
-  var captureContext; // context for capture canvas
-  var diffCanvas; // internal canvas for diffing downscaled captures
-  var diffContext; // context for diff canvas
-  var motionCanvas; // receives processed diff images
-  var motionContext; // context for motion canvas
-  var initSuccessCallback; // called when init succeeds
-  var initErrorCallback; // called when init fails
-  var startCompleteCallback; // called when start is complete
-  var captureCallback; // called when an image has been captured and diffed
-  var captureInterval; // interval for continuous captures
-  var captureIntervalTime; // time between captures, in ms
-  var captureWidth; // full captured image width
-  var captureHeight; // full captured image height
-  var diffWidth; // downscaled width for diff/motion
-  var diffHeight; // downscaled height for diff/motion
-  var isReadyToDiff; // has a previous capture been made to diff against?
-  var pixelDiffThreshold; // min for a pixel to be considered significant
-  var scoreThreshold; // min for an image to be considered significant
-  var includeMotionBox; // flag to calculate and draw motion bounding box
-  var includeMotionPixels; // flag to create object denoting pixels with motion
-  function init(options) {
-    // sanity check
-    if (!options) {
-      throw 'No options object provided';
-    }
-    // incoming options with defaults
-    video = options.video || document.createElement('video');
-    motionCanvas = options.motionCanvas || document.createElement('canvas');
-    captureIntervalTime = options.captureIntervalTime || 100;
-    captureWidth = options.captureWidth || 640;
-    captureHeight = options.captureHeight || 480;
-    diffWidth = options.diffWidth || 64;
-    diffHeight = options.diffHeight || 48;
-    pixelDiffThreshold = options.pixelDiffThreshold || 32;
-    scoreThreshold = options.scoreThreshold || 16;
-    includeMotionBox = options.includeMotionBox || false;
-    includeMotionPixels = options.includeMotionPixels || false;
-    // callbacks
-    initSuccessCallback = options.initSuccessCallback || function() {};
-    initErrorCallback = options.initErrorCallback || function() {};
-    startCompleteCallback = options.startCompleteCallback || function() {};
-    captureCallback = options.captureCallback || function() {};
-    // non-configurable
-    captureCanvas = document.createElement('canvas');
-    diffCanvas = document.createElement('canvas');
-    isReadyToDiff = false;
-    // prep video
-    video.autoplay = true;
-    // prep capture canvas
-    captureCanvas.width = captureWidth;
-    captureCanvas.height = captureHeight;
-    captureContext = captureCanvas.getContext('2d');
-    // prep diff canvas
-    diffCanvas.width = diffWidth;
-    diffCanvas.height = diffHeight;
-    diffContext = diffCanvas.getContext('2d');
-    // prep motion canvas
-    motionCanvas.width = diffWidth;
-    motionCanvas.height = diffHeight;
-    motionContext = motionCanvas.getContext('2d');
-    requestWebcam();
-  }
-  function requestWebcam() {
-    var constraints = {
-      audio: false,
-      video: {
-        width: captureWidth,
-        height: captureHeight
-      }
-    };
-    navigator.mediaDevices.getUserMedia(constraints)
-      .then(initSuccess)
-      .catch(initError);
-  }
-  function initSuccess(requestedStream) {
-    stream = requestedStream;
-    initSuccessCallback();
-  }
-  function initError(error) {
-    console.log(error);
-    initErrorCallback();
-  }
-  function start() {
-    if (!stream) {
-      throw 'Cannot start after init fail';
-    }
-    // streaming takes a moment to start
-    video.addEventListener('canplay', startComplete);
-    video.srcObject = stream;
-  }
-  function startComplete() {
-    video.removeEventListener('canplay', startComplete);
-    captureInterval = setInterval(capture, captureIntervalTime);
-    startCompleteCallback();
-  }
-  function stop() {
-    clearInterval(captureInterval);
-    video.src = '';
-    motionContext.clearRect(0, 0, diffWidth, diffHeight);
-    isReadyToDiff = false;
-  }
-  function capture() {
-    // save a full-sized copy of capture
-    captureContext.drawImage(video, 0, 0, captureWidth, captureHeight);
-    var captureImageData = captureContext.getImageData(0, 0, captureWidth, captureHeight);
-    // diff current capture over previous capture, leftover from last time
-    diffContext.globalCompositeOperation = 'difference';
-    diffContext.drawImage(video, 0, 0, diffWidth, diffHeight);
-    var diffImageData = diffContext.getImageData(0, 0, diffWidth, diffHeight);
-    if (isReadyToDiff) {
-      var diff = processDiff(diffImageData);
-      motionContext.putImageData(diffImageData, 0, 0);
-      if (diff.motionBox) {
-        motionContext.strokeStyle = '#fff';
-        motionContext.strokeRect(
-          diff.motionBox.x.min + 0.5,
-          diff.motionBox.y.min + 0.5,
-          diff.motionBox.x.max - diff.motionBox.x.min,
-          diff.motionBox.y.max - diff.motionBox.y.min
-        );
-      }
-      captureCallback({
-        imageData: captureImageData,
-        score: diff.score,
-        hasMotion: diff.score >= scoreThreshold,
-        motionBox: diff.motionBox,
-        motionPixels: diff.motionPixels,
-        getURL: function() {
-          return getCaptureUrl(this.imageData);
-        },
-        checkMotionPixel: function(x, y) {
-          return checkMotionPixel(this.motionPixels, x, y)
+window.onload = () => {
+  gsap.set("#scrollDist", {
+    width: "100%",
+    height: gsap.getProperty("#app", "height"), // apply the height of the image stack
+    onComplete: () => {
+      gsap.set("#app, #imgGroup", {
+        opacity: 1,
+        position: "fixed",
+        width: "100%",
+        height: "100%",
+        top: 0,
+        left: 0,
+        perspective: 300
+      });
+      gsap.set("#app img", {
+        position: "absolute",
+        attr: {
+          id: (i, t, a) => {
+            initImg(i, t);
+            return "img" + i;
+          }
         }
       });
+
+      gsap
+        .timeline({
+          defaults: { duration: 1 },
+          onUpdate: () => {
+            if (gsap.getProperty("#cursorClose", "opacity") == 1) closeDetail();
+          },
+          scrollTrigger: {
+            trigger: "#scrollDist",
+            start: "top top",
+            end: "bottom bottom",
+            scrub: 1
+          }
+        })
+        .fromTo(
+          "#txt1",
+          { scale: 0.6, transformOrigin: "50%" },
+          { scale: 2, ease: "power1.in" },
+          0
+        )
+        .to(
+          "#txt1 path",
+          { duration: 0.3, drawSVG: 0, stagger: 0.05, ease: "power1.in" },
+          0
+        )
+        .fromTo(
+          ".imgBox",
+          { z: -5000 },
+          { z: 350, stagger: -0.3, ease: "none" },
+          0.3
+        )
+        .fromTo(
+          ".imgBox img",
+          { scale: 3 },
+          { scale: 1.15, stagger: -0.3, ease: "none" },
+          0.3
+        )
+        .to(
+          ".imgBox",
+          { duration: 0, pointerEvents: "auto", stagger: -0.3 },
+          0.5
+        )
+        .from(
+          ".imgBox img",
+          { duration: 0.3, opacity: 0, stagger: -0.3, ease: "power1.inOut" },
+          0.3
+        )
+        .to(
+          ".imgBox img",
+          { duration: 0.1, opacity: 0, stagger: -0.3, ease: "expo.inOut" },
+          1.2
+        )
+        .to(
+          ".imgBox",
+          { duration: 0, pointerEvents: "none", stagger: -0.3 },
+          1.27
+        )
+        .add("end")
+        .fromTo(
+          "#txt2",
+          { scale: 0.1, transformOrigin: "50%" },
+          { scale: 0.6, ease: "power3" },
+          "end-=0.2"
+        )
+        .from(
+          "#txt2 path",
+          { duration: 0.4, drawSVG: 0, ease: "sine.inOut", stagger: 0.15 },
+          "end-=0.2"
+        );
+
+      // Intro animation
+      gsap.from(window, {
+        duration: 1.4,
+        scrollTo: gsap.getProperty("#scrollDist", "height") / 3,
+        ease: "power2.in"
+      });
+      gsap.from(".imgBox", {
+        duration: 0.2,
+        opacity: 0,
+        stagger: 0.06,
+        ease: "power1.inOut"
+      });
     }
-    // draw current capture normally over diff, ready for next time
-    diffContext.globalCompositeOperation = 'source-over';
-    diffContext.drawImage(video, 0, 0, diffWidth, diffHeight);
-    isReadyToDiff = true;
+  });
+
+  function initImg(i, t) {
+    const box = document.createElement("div");
+    box.appendChild(t);
+    document.getElementById("imgGroup").appendChild(box);
+    gsap.set(box, {
+      pointerEvents: "none",
+      position: "absolute",
+      attr: { id: "box" + i, class: "imgBox" },
+      width: t.width,
+      height: t.height,
+      overflow: "hidden",
+      top: "50%",
+      left: "50%",
+      x: t.dataset.x,
+      y: t.dataset.y,
+      xPercent: -50,
+      yPercent: -50,
+      perspective: 500
+    });
+
+    t.ontouchstart = () => {
+      gsap.to(t, { z: -25, ease: "power2" });
+      gsap.to("#cursorCircle", { attr: { r: 40 }, ease: "power3" });
+    };
+
+    t.ontouchend = () => gsap.to(t, { z: 0, ease: "power1.inOut" });
+
+    t.ontouchcancel = () =>
+      gsap.to("#cursorCircle", {
+        duration: 0.2,
+        attr: { r: 11, "stroke-width": 3 }
+      });
+
+    t.ontouchmove = () => {
+      gsap.to(".imgBox", {
+        xPercent: 0,
+        yPercent: 0,
+        rotateX: 0,
+        rotateY: 0
+      });
+
+      gsap.to(".imgBox img", {
+        xPercent: 0,
+        yPercent: 0
+      });
+    };
+
+    t.onclick = () => showDetail(t);
   }
-  function processDiff(diffImageData) {
-    var rgba = diffImageData.data;
-    // pixel adjustments are done by reference directly on diffImageData
-    var score = 0;
-    var motionPixels = includeMotionPixels ? [] : undefined;
-    var motionBox = undefined;
-    for (var i = 0; i < rgba.length; i += 4) {
-      var pixelDiff = rgba[i] * 0.3 + rgba[i + 1] * 0.6 + rgba[i + 2] * 0.1;
-      var normalized = Math.min(255, pixelDiff * (255 / pixelDiffThreshold));
-      rgba[i] = 0;
-      rgba[i + 1] = normalized;
-      rgba[i + 2] = 0;
-      if (pixelDiff >= pixelDiffThreshold) {
-        score++;
-        coords = calculateCoordinates(i / 4);
-        if (includeMotionBox) {
-          motionBox = calculateMotionBox(motionBox, coords.x, coords.y);
-        }
-        if (includeMotionPixels) {
-          motionPixels = calculateMotionPixels(motionPixels, coords.x, coords.y, pixelDiff);
-        }
-      }
-    }
-    return {
-      score: score,
-      motionBox: score > scoreThreshold ? motionBox : undefined,
-      motionPixels: motionPixels
+
+  function showDetail(t) {
+    gsap
+      .timeline()
+      .set("#detailTxt", { textContent: t.alt }, 0)
+      .set(
+        "#detailImg",
+        { background: "url(" + t.src + ") center no-repeat" },
+        0
+      )
+      .fromTo("#detail", { top: "100%" }, { top: 0, ease: "expo.inOut" }, 0)
+      .fromTo(
+        "#detailImg",
+        { y: "100%" },
+        { y: "0%", ease: "expo", duration: 0.7 },
+        0.2
+      )
+      .fromTo(
+        "#detailTxt",
+        { opacity: 0 },
+        { opacity: 1, ease: "power2.inOut" },
+        0.4
+      )
+      .to("#cursorCircle", { duration: 0.2, opacity: 0 }, 0.2)
+      .to("#cursorClose", { duration: 0.2, opacity: 1 }, 0.4);
+  }
+
+  function closeDetail() {
+    gsap
+      .timeline()
+      .to("#detailTxt", { duration: 0.3, opacity: 0 }, 0)
+      .to("#detailImg", { duration: 0.3, y: "-100%", ease: "power1.in" }, 0)
+      .to("#detail", { duration: 0.3, top: "-100%", ease: "expo.in" }, 0.1)
+      .to("#cursorClose", { duration: 0.1, opacity: 0 }, 0)
+      .to("#cursorCircle", { duration: 0.2, opacity: 1 }, 0.1);
+  }
+
+  document.getElementById("detail").ontouchstart = closeDetail;
+
+  if (ScrollTrigger.isTouch == 1) {
+    // On mobile, hide the mouse follower and remove x/y positioning from the images
+    gsap.set("#cursor", { opacity: 0 });
+    gsap.set(".imgBox", { x: 0, y: 0 });
+  } else {
+    let cursorX = gsap.quickSetter("#cursor", "x");
+    let cursorY = gsap.quickSetter("#cursor", "y");
+
+    window.ontouchmove = (e) => {
+      const touch = e.touches[0];
+      const mouseX = touch.clientX;
+      const mouseY = touch.clientY;
+
+      gsap.to(".imgBox", {
+        xPercent: 0,
+        yPercent: 0,
+        rotateX: 0,
+        rotateY: 0
+      });
+
+      gsap.to(".imgBox img", {
+        xPercent: 0,
+        yPercent: 0
+      });
+
+      cursorX(mouseX);
+      cursorY(mouseY);
     };
   }
-  function calculateCoordinates(pixelIndex) {
-    return {
-      x: pixelIndex % diffWidth,
-      y: Math.floor(pixelIndex / diffWidth)
-    };
-  }
-  function calculateMotionBox(currentMotionBox, x, y) {
-    // init motion box on demand
-    var motionBox = currentMotionBox || {
-      x: {
-        min: coords.x,
-        max: x
-      },
-      y: {
-        min: coords.y,
-        max: y
-      }
-    };
-    motionBox.x.min = Math.min(motionBox.x.min, x);
-    motionBox.x.max = Math.max(motionBox.x.max, x);
-    motionBox.y.min = Math.min(motionBox.y.min, y);
-    motionBox.y.max = Math.max(motionBox.y.max, y);
-    return motionBox;
-  }
-  function calculateMotionPixels(motionPixels, x, y, pixelDiff) {
-    motionPixels[x] = motionPixels[x] || [];
-    motionPixels[x][y] = true;
-    return motionPixels;
-  }
-  function getCaptureUrl(captureImageData) {
-    // may as well borrow captureCanvas
-    captureContext.putImageData(captureImageData, 0, 0);
-    return captureCanvas.toDataURL();
-  }
-  function checkMotionPixel(motionPixels, x, y) {
-    return motionPixels && motionPixels[x] && motionPixels[x][y];
-  }
-  function getPixelDiffThreshold() {
-    return pixelDiffThreshold;
-  }
-  function setPixelDiffThreshold(val) {
-    pixelDiffThreshold = val;
-  }
-  function getScoreThreshold() {
-    return scoreThreshold;
-  }
-  function setScoreThreshold(val) {
-    scoreThreshold = val;
-  }
-  return {
-    // public getters/setters
-    getPixelDiffThreshold: getPixelDiffThreshold,
-    setPixelDiffThreshold: setPixelDiffThreshold,
-    getScoreThreshold: getScoreThreshold,
-    setScoreThreshold: setScoreThreshold,
-    // public functions
-    init: init,
-    start: start,
-    stop: stop
-  };
-})();
+};
